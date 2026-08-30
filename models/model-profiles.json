@@ -1,0 +1,211 @@
+{
+  "$comment": "Declarative subagent roster AND capability curation. `model` is the canonical provider/model id a Task may be routed to — this file, not the TUI favorites list, is the source of truth for which models exist as subagents. Real costs/context come from models.dev via models-cache.json; price*/context here are offline fallbacks. lane: go-quota = OpenCode Go subscription; sub = user has a subscription (cheap regardless of list price); free = free tier; metered = pay-per-token.",
+  "profiles": [
+    {
+      "id": "openrouter-glm-5-3-flash",
+      "model": "openrouter/z-ai/glm-5.3-flash",
+      "match": [
+        "openrouter/z-ai/glm-5.3-flash"
+      ],
+      "name": "OpenRouter GLM-5.3-Flash",
+      "lane": "metered",
+      "tier": "utility",
+      "priceInput": 0.075,
+      "priceOutput": 0.25,
+      "context": 1310720,
+      "output": 131072,
+      "best": "named OpenRouter GLM or last-resort when Go/OpenAI/Grok subs are capped",
+      "avoid": "default dispatch — metered pay-per-token; prefer Go Muse or Sub grok/luna",
+      "notes": "Must stay above the Go-quota glm-5-3-flash profile (first-match). Requires OPENROUTER_API_KEY; missing key is credentials-limitation, not a reason to drop the favorite."
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "model": "opencode-go/deepseek-v4-flash-vision-exp",
+      "match": [
+        "deepseek-v4-flash"
+      ],
+      "name": "DeepSeek V4 Flash / Vision Exp",
+      "lane": "go-quota",
+      "tier": "worker",
+      "priceInput": 0.22,
+      "priceOutput": 0.66,
+      "context": 1000000,
+      "output": 384000,
+      "best": "fallback worker for vision-adjacent tasks when Muse unavailable; not default — Muse replaces it for standard coding",
+      "avoid": "default dispatch — use Muse Spark 1.2 first; also novel architecture, when it loops, fail-closed types",
+      "notes": "284B/13B MoE; reasoning close to V4-Pro on simple agent tasks. No longer default — Muse is."
+    },
+    {
+      "id": "glm-5-3-flash",
+      "model": "opencode-go/glm-5.3-flash",
+      "match": [
+        "glm-5.3-flash",
+        "glm-5.3"
+      ],
+      "name": "GLM-5.3-Flash",
+      "lane": "go-quota",
+      "tier": "utility",
+      "priceInput": 0.07,
+      "priceOutput": 0.25,
+      "context": 1000000,
+      "output": 131072,
+      "best": "tiny utility/ops only when explicitly requesting cheapest 1M run — NOT default; prefer Muse even for ops/grunt/bulk/docs",
+      "avoid": "default dispatch — Muse is default even for most ops; also complex multi-step debug, novel architecture",
+      "notes": "Cheapest Go model with 1M ctx + structured output. 'Flash' is a name, not a speed guarantee. No longer default for ops — Muse is."
+    },
+    {
+      "id": "hy3",
+      "model": "opencode-go/hy3",
+      "match": [
+        "hy3",
+        "tencent/hy3"
+      ],
+      "name": "Hy3",
+      "lane": "go-quota",
+      "tier": "precise",
+      "priceInput": 0.02,
+      "priceOutput": 0.07,
+      "context": 256000,
+      "output": 64000,
+      "best": "schemas, types, contracts, fail-closed, instruction fidelity, final reviews",
+      "avoid": "huge-context dumps, vision, loose exploratory codegen",
+      "notes": "Cheapest on Go; best instruction following; 256k context. cheapest + precise = the configured reviewer model."
+    },
+    {
+      "id": "muse-spark",
+      "model": "opencode-go/muse-spark-1.2-contributor",
+      "match": [
+        "muse-spark",
+        "muse-spark-1.2-contributor"
+      ],
+      "name": "Muse Spark 1.2 Contributor",
+      "lane": "go-quota",
+      "tier": "codegen",
+      "priceInput": 0.1,
+      "priceOutput": 0.2,
+      "context": 1048576,
+      "output": 131072,
+      "best": "DEFAULT WORKHORSE — 90% of worker tasks: impl, tests, refactors, debugging, UI/HUD, frontend, scene/codegen, grunt, bulk edits, docs, parallel fan-out, most coding",
+      "avoid": "fail-closed types, security-sensitive, when it takes shortcuts → escalate to Grok 4.6 (grok-sub) or Kimi",
+      "notes": "Go-quota cheap ($0.1/$0.2) and treated as unlimited — default for ~90% of tasks that would have gone to GLM/DeepSeek/Grok. Observed shortcutting — use Grok/Kimi when instruction fidelity fails."
+    },
+    {
+      "id": "kimi-k3",
+      "model": "opencode-go/kimi-k3",
+      "match": [
+        "kimi-k3"
+      ],
+      "name": "Kimi K3",
+      "lane": "go-quota",
+      "tier": "heavy",
+      "priceInput": 3,
+      "priceOutput": 15,
+      "context": 1048576,
+      "output": 131072,
+      "best": "design, creativity, novel architecture, long-horizon, huge context, multimodal, hard agentic",
+      "avoid": "grunt, ops, utility runs, verifications - slow and quota-burning",
+      "notes": "$3/$15 per 1M and slow - spend only on design/creative/architecture work."
+    },
+    {
+      "id": "luna-fast",
+      "model": "openai/gpt-5.6-luna-fast",
+      "match": [
+        "gpt-5.6-luna",
+        "luna-fast",
+        "gpt-5.6-luna-fast"
+      ],
+      "name": "GPT-5.6 Luna Fast",
+      "lane": "sub",
+      "tier": "escalate",
+      "priceInput": 0.2,
+      "priceOutput": 1.2,
+      "context": 1050000,
+      "output": 128000,
+      "best": "when the user names it, or a cheaper model already failed",
+      "avoid": "default dispatch - sub is cheap, but no observed edge over Go workers",
+      "notes": "OpenAI sub per Jk: effectively cheap. Escalation, not default."
+    },
+    {
+      "id": "luna-max",
+      "model": "openai/gpt-5.6-luna",
+      "match": [
+        "openai/gpt-5.6-luna",
+        "gpt-5.6-luna/max",
+        "luna-max"
+      ],
+      "name": "GPT-5.6 Luna Max",
+      "lane": "sub",
+      "tier": "escalate",
+      "priceInput": 1,
+      "priceOutput": 6,
+      "context": 1048576,
+      "output": 100000,
+      "best": "explicit selection or when lower-cost capable choices fail",
+      "avoid": "automatic bulk implementation unless explicitly selected or cheaper choices failed",
+      "notes": "Preferred future worker pin is provider=openai, model=gpt-5.6-luna, variant=max. Distinct from Luna Fast; the cursor-acp catalog's encoded gpt-5.6-luna-max is only a discoverable catalog representation."
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "model": "openai/gpt-5.6-sol",
+      "match": [
+        "gpt-5.6-sol"
+      ],
+      "name": "GPT-5.6 Sol",
+      "lane": "sub",
+      "tier": "escalate",
+      "context": 200000,
+      "output": 100000,
+      "best": "when the user names it, or a cheaper model already failed - frontier reasoning, hard design, architecture",
+      "avoid": "default dispatch",
+      "notes": "OpenAI sub. Escalation, not default."
+    },
+    {
+      "id": "grok-4-6",
+      "model": "grok-sub/grok-4.6",
+      "match": [
+        "grok-4.6",
+        "grok-4"
+      ],
+      "name": "Grok 4.6",
+      "lane": "sub",
+      "tier": "worker",
+      "context": 500000,
+      "output": 500000,
+      "best": "hard debugging, long rewrites, whole-file refactors, reasoning-heavy tasks when Muse takes shortcuts — fallback, not default (grok-sub only, never xai/*)",
+      "avoid": "default dispatch, utility/ops, tiny edits — Muse is default; use Grok only for hard debugging/long rewrites/shortcut recovery",
+      "notes": "Grok 4.6 rides the SuperGrok $30 plan via the grok-sub provider (local proxy 3011 -> cli-chat-proxy.grok.com). Do NOT use xai/grok-4.6 - that bills api.x.ai per token. 500k/500k context/output. Use only when Muse would shortcut or reasoning depth is needed — not default."
+    },
+    {
+      "id": "x-preview-f-free",
+      "model": "opencode/x-preview-f-free",
+      "match": [
+        "x-preview-f-free"
+      ],
+      "name": "x-preview-f-free",
+      "lane": "free",
+      "tier": "explore",
+      "best": "throwaway previews, cheap second opinion",
+      "avoid": "production-critical or anything you need to trust",
+      "notes": "Zen free preview; no quota cost."
+    },
+    {
+      "id": "claude-code",
+      "model": [
+        "claude-code/claude",
+        "claude-code/opus",
+        "claude-code/sonnet"
+      ],
+      "match": [
+        "claude-code/claude",
+        "claude-code/opus",
+        "claude-code/sonnet"
+      ],
+      "name": "Claude Code",
+      "lane": "sub",
+      "tier": "worker",
+      "best": "when Jk picks Claude Code in the model picker, or Task(agent=claude-code) — official local CLI",
+      "avoid": "auto-dispatch as a chat model; native Anthropic API assumptions; pinning a relay like x-preview/GLM/luna",
+      "notes": "Not an API provider. openai-compatible bridge :3012 -> official `claude` CLI (`-p --output-format stream-json`). Auth is `claude auth login`. Picker identity claude-code/claude (also opus/sonnet)."
+    }
+  ]
+}

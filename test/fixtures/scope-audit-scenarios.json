@@ -1,0 +1,17 @@
+{
+  "description": "Sanitized transcript-derived scope decisions; no raw transcript content.",
+  "scenarios": [
+    {"id":"quest-claude-readiness","session":"ses_fbaa79c12ffeNMIiIs1ztOyu51","kind":"fix","delta":{"domains":["claude-readiness"]},"decision":"reject"},
+    {"id":"quest-claude-capacity","session":"ses_fbaa79c12ffeNMIiIs1ztOyu51","kind":"review","delta":{"components":["capacity"]},"decision":"reject"},
+    {"id":"quest-harness","session":"ses_fbaa79c12ffeNMIiIs1ztOyu51","kind":"verify","delta":{"components":["harness-runtime"]},"decision":"reject"},
+    {"id":"recovery-sol-policy","session":"ses_fbac4c18bffe2cRRVVAqYCTFzi","kind":"fix","delta":{"domains":["sol-compaction"]},"decision":"reject"},
+    {"id":"recovery-catalog","session":"ses_fbac4c18bffe2cRRVVAqYCTFzi","kind":"review","delta":{"components":["model-catalog"]},"decision":"reject"},
+    {"id":"recovery-focus","session":"ses_fbac4c18bffe2cRRVVAqYCTFzi","kind":"fix","delta":{"components":["focus"]},"decision":"reject"},
+    {"id":"recovery-papercut","session":"ses_fbac4c18bffe2cRRVVAqYCTFzi","kind":"verify","delta":{"components":["papercut-memory"]},"decision":"reject"},
+    {"id":"recovery-benchmark","session":"ses_fbac4c18bffe2cRRVVAqYCTFzi","kind":"integrate","delta":{"domains":["benchmarking"]},"decision":"reject"},
+    {"id":"same-fix","session":"ses_owner","kind":"fix","delta":{},"decision":"allow"},
+    {"id":"same-review","session":"ses_owner","kind":"review","delta":{},"decision":"allow"},
+    {"id":"same-verify","session":"ses_owner","kind":"verify","delta":{},"decision":"allow"},
+    {"id":"same-integrate","session":"ses_owner","kind":"integrate","delta":{},"decision":"allow"}
+  ]
+}
