@@ -1,6 +1,6 @@
 /**
  * Session-model path for Claude Code: picker identity claude-code/claude
- * (opus/sonnet) talks through the official CLI. Not an Anthropic API provider.
+ * (opus/sonnet/haiku) talks through the official CLI. Not an Anthropic API provider.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
@@ -9,6 +9,7 @@ import { join } from "node:path"
 import { CLAUDE_CODE_MODELS, CLAUDE_CODE_PROVIDER, claudeCliModelID, ensureClaudeCodeCatalog, isClaudeCodeModel, splitProviderModel } from "../models/model-catalog"
 import { resolveClaudeExecutable, runClaudeCodeChat, type ClaudeCodeCliResult } from "./claude-code-task"
 import { harnessForProvider, harnessList, type HarnessStreamEvent } from "../harnesses"
+import { harnessEventToOcLine } from "../harnesses/harness-json-to-oc"
 import { runHarness } from "./harness-run"
 import { USAGE_REACHED } from "../usage/usage-reached"
 
@@ -215,7 +216,12 @@ function streamTurn(options: {
       const text = await turn((event) => {
         if (event.kind === "thinking" && event.text) emit({ reasoning_content: event.text })
         else if (event.kind === "text" && event.text) { streamed += event.text; emit({ content: event.text }) }
-        else if (event.kind === "tool") emit({ content: `[tool] ${event.name ?? "tool"}${event.text ? `: ${event.text}` : ""}\n` })
+        else if (event.kind === "tool") {
+          // Single pretty layer — each harness's dialect via harness-json-to-oc.
+          // Claude Bash `{"command":"ls"}` -> `$ ls` so Image 1 becomes Image 2.
+          const pretty = harnessEventToOcLine(event)
+          emit({ content: `${pretty}\n` })
+        }
         // "final" and "error" events are folded into the terminal text and
         // the thrown failure below; nothing is written for them here.
       })

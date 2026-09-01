@@ -38,7 +38,7 @@ export type HarnessSpec = {
   executable: string
   models: HarnessModel[]
   /** Argv for one non-interactive turn. The prompt goes on stdin when `promptOnStdin`. */
-  args: (options: { model?: string; sessionId?: string; resumed?: boolean }) => string[]
+  args: (options: { model?: string; sessionId?: string; resumed?: boolean; mcpConfigPath?: string }) => string[]
   promptOnStdin: boolean
   /** Pull the assistant text out of this CLI's stdout. */
   parse: (stdout: string) => string

@@ -1,4 +1,5 @@
 import { parseJsonl, type HarnessSpec, type HarnessStreamEvent } from "./types"
+import { codexToolToOc } from "./harness-json-to-oc"
 
 /**
  * OpenAI's Codex CLI. `codex exec` is the non-interactive entrypoint and reads
@@ -42,7 +43,9 @@ export const codex: HarnessSpec = {
       return text ? { kind: "thinking", text } : undefined
     }
     if ((v?.type === "item.started" || v?.type === "item.completed") && item?.type === "command_execution") {
-      return { kind: "tool", name: "command", ...(typeof item.command === "string" ? { text: item.command.slice(0, 120) } : {}) }
+      const pretty = codexToolToOc(item)
+      // codexToolToOc already returns `$ cmd`; keep the `$` so Image 2 polish is shared
+      return { kind: "tool", name: "command", ...(pretty ? { text: pretty } : {}) }
     }
     if (v?.type === "error" && typeof v.message === "string") return { kind: "error", text: v.message }
     if (item?.type === "error" && typeof item.message === "string") return { kind: "error", text: item.message }

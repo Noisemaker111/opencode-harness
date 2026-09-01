@@ -6,7 +6,6 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { classifyFailure, classifyStreamResult, parseClaudeStreamResult, parseClaudeStreamText, claudeCodeTaskTool, claudeCodeTool, discoverClaudeRuntime, extractSessionId, installClaudeCodeIntercept, interceptClaudeCodeTask, isClaudeCodeSpawn, makeClaudeCodeTaskTool, resolveClaudeCodeWorkerName, runClaudeCodeTask } from "../plugins-active/claude-code-task"
 import { appendLedger, readLedger, recordScopeRejection, trackedChildren } from "../orchestration/orchestration-ledger"
-import { canonicalizeDispatch } from "../orchestration/dispatch"
 import { normalizeScope, pathIsOwned, validateContinuation, type TaskScopeManifest } from "../orchestration/task-scope"
 import { superviseForeground, windowsBatchLaunch } from "../scripts/foreground-supervisor"
 import audit from "./fixtures/scope-audit-scenarios.json"
@@ -39,7 +38,6 @@ test("Task agent=claude-code intercepts to the official CLI with its own alias",
     id: "call-cc",
     input: { agent: "claude-code", description: "do the work", model: "claude-code/sonnet" },
   }
-  canonicalizeDispatch(event)
   const result = await interceptClaudeCodeTask(event, async (input, context) => {
     received = { input, context }
     return { content: "Claude Code (Harness) completed: ok", metadata: { sessionId: "claude-session", runtime: "claude-code" } }

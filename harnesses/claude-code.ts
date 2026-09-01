@@ -1,9 +1,15 @@
 import { parseJsonl, type HarnessSpec, type HarnessStreamEvent } from "./types"
+import { claudeToolResultToOc, claudeToolToOc } from "./harness-json-to-oc"
 
-/** A tool_use block's input, summarized for a one-line activity note. */
+/** A tool_use block's input, summarized for a one-line activity note. Now Image-2 pretty. */
 function toolSummary(name: string | undefined, input: unknown): HarnessStreamEvent {
-  const brief = input && typeof input === "object" && Object.keys(input as object).length ? JSON.stringify(input).slice(0, 120) : ""
-  return { kind: "tool", name: String(name ?? "tool"), ...(brief ? { text: brief } : {}) }
+  const text = claudeToolToOc(name, input)
+  return { kind: "tool", name: String(name ?? "tool"), text }
+}
+
+/** A tool_result block, rendered like Image 2's `FullName` table. */
+function toolResultSummary(content: unknown, isError?: boolean): HarnessStreamEvent {
+  return { kind: "text", text: claudeToolResultToOc(content, isError) }
 }
 
 /** Anthropic's Claude Code CLI. The only harness with explicit session ids. */
@@ -16,12 +22,14 @@ export const claudeCode: HarnessSpec = {
     { id: "claude", name: "Claude Code" },
     { id: "opus", name: "Claude Code Opus" },
     { id: "sonnet", name: "Claude Code Sonnet" },
+    { id: "haiku", name: "Claude Code Haiku" },
   ],
   // --session-id names a new session; --resume continues one we already know.
   // Passing the wrong one for the state is how "session not found" happens.
-  args: ({ model, sessionId, resumed }) => [
+  args: ({ model, sessionId, resumed, mcpConfigPath }) => [
     "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
     "--permission-mode", "bypassPermissions",
+    ...(mcpConfigPath ? ["--mcp-config", mcpConfigPath] : []),
     ...(model ? ["--model", model] : []),
     ...(sessionId ? [resumed ? "--resume" : "--session-id", sessionId] : []),
   ],
@@ -45,13 +53,22 @@ export const claudeCode: HarnessSpec = {
       if (event?.type === "content_block_start" && event.content_block?.type === "tool_use") {
         return toolSummary(event.content_block.name, event.content_block.input)
       }
+      if (event?.type === "content_block_start" && event.content_block?.type === "tool_result") {
+        return toolResultSummary(event.content_block.content, event.content_block.is_error)
+      }
       return undefined
     }
     if (v?.type === "assistant") {
-      const block = Array.isArray(v.message?.content)
-        ? v.message.content.find((b: any) => b?.type === "tool_use")
-        : undefined
-      return block ? toolSummary(block.name, block.input) : undefined
+      const content = Array.isArray(v.message?.content) ? v.message.content : undefined
+      const useBlock = content?.find((b: any) => b?.type === "tool_use")
+      if (useBlock) return toolSummary(useBlock.name, useBlock.input)
+      const resultBlock = content?.find((b: any) => b?.type === "tool_result")
+      if (resultBlock) return toolResultSummary(resultBlock.content, resultBlock.is_error)
+      return undefined
+    }
+    if (v?.type === "user" && Array.isArray(v.message?.content)) {
+      const resultBlock = v.message.content.find((b: any) => b?.type === "tool_result")
+      if (resultBlock) return toolResultSummary(resultBlock.content, resultBlock.is_error)
     }
     if (v?.type === "result") {
       if (v.is_error === true) {

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
-import { HARNESSES, harnessFor, harnessForProvider, harnessList, resolveHarnessName } from "../harnesses"
+import { HARNESSES, OPENCODE_MCP_TOOLS, harnessFor, harnessForProvider, harnessList, resolveHarnessName } from "../harnesses"
 import { streamErrorMessage } from "../plugins-active/harness-run"
 
 
@@ -18,6 +18,19 @@ test("providers map back to exactly one harness", () => {
   expect(harnessForProvider("grok-build")?.id).toBe("grok-build")
   expect(harnessForProvider("codex")?.id).toBe("codex")
   expect(harnessForProvider("openai")).toBeUndefined()
+})
+
+test("mcp_agent requires Quest lineage and exposes no caller-selected role", () => {
+  const agent = OPENCODE_MCP_TOOLS.find((tool) => tool.name === "agent")!
+  expect(agent.inputSchema.required).toEqual(["task", "questID", "model"])
+  expect(agent.inputSchema.properties).toHaveProperty("questID")
+  expect(agent.inputSchema.properties).toHaveProperty("sessionID")
+  for (const field of ["agent", "role", "runtime", "agentRole"]) expect(agent.inputSchema.properties).not.toHaveProperty(field)
+  const root = join(import.meta.dir, "..")
+  const config = readFileSync(join(root, "opencode.jsonc"), "utf8")
+  expect(config).toMatch(/"mcp"\s*:\s*\{[\s\S]*?"command"\s*:\s*\["node",\s*"C:\/Users\/Jk101\/\.config\/opencode\/harnesses\/opencode-mcp-stdio\.mjs"\]/)
+  expect(config).toMatch(/"task"\s*:\s*false/)
+  expect(config).toMatch(/"subagent"\s*:\s*false/)
 })
 
 test("codex omits -m for the account default", () => {
@@ -53,9 +66,11 @@ test("claude-code stream events map into the shared vocabulary", () => {
   const pick = (event: unknown) => HARNESSES["claude-code"].streamEvent?.(event)
   expect(pick({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "hmm " } } })).toEqual({ kind: "thinking", text: "hmm " })
   expect(pick({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hi" } } })).toEqual({ kind: "text", text: "Hi" })
+  // harness-json-to-oc: Image 1 `{"command":"ls"}` -> Image 2 `$ ls`
   expect(pick({ type: "stream_event", event: { type: "content_block_start", content_block: { type: "tool_use", name: "Bash", input: { command: "ls" } } } }))
-    .toEqual({ kind: "tool", name: "Bash", text: '{"command":"ls"}' })
-  expect(pick({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: {} }] } })).toEqual({ kind: "tool", name: "Read" })
+    .toEqual({ kind: "tool", name: "Bash", text: "$ ls" })
+  // empty input still maps to a tool marker; empty Read gets its own glyph
+  expect(pick({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: {} }] } })).toEqual({ kind: "tool", name: "Read", text: "→ Read" })
   expect(pick({ type: "result", subtype: "success", result: "done" })).toEqual({ kind: "final", text: "done" })
   expect(pick({ type: "result", subtype: "error_during_execution", is_error: true, errors: ["No conversation found with session ID: x"] }))
     .toEqual({ kind: "error", text: "No conversation found with session ID: x" })
@@ -67,7 +82,8 @@ test("codex stream events map into the shared vocabulary", () => {
   const pick = (event: unknown) => HARNESSES.codex.streamEvent?.(event)
   expect(pick({ type: "item.completed", item: { type: "agent_message", text: "done" } })).toEqual({ kind: "final", text: "done" })
   expect(pick({ type: "item.completed", item: { type: "reasoning", summary: [{ type: "summary_text", text: "thinking" }] } })).toEqual({ kind: "thinking", text: "thinking" })
-  expect(pick({ type: "item.started", item: { type: "command_execution", command: "bun test" } })).toEqual({ kind: "tool", name: "command", text: "bun test" })
+  // harness-json-to-oc: `bun test` -> `$ bun test` like Image 2
+  expect(pick({ type: "item.started", item: { type: "command_execution", command: "bun test" } })).toEqual({ kind: "tool", name: "command", text: "$ bun test" })
   expect(pick({ type: "error", message: "boom" })).toEqual({ kind: "error", text: "boom" })
   expect(pick({ delta: "par" })).toEqual({ kind: "text", text: "par" })
   expect(pick({ type: "thread.started" })).toBeUndefined()

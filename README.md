@@ -10,7 +10,7 @@ authentication belongs to `claude`, `grok` and `codex` themselves.
 
 | Harness | CLI | Models |
 |---|---|---|
-| Claude Code | `claude` | `claude`, `opus`, `sonnet` |
+| Claude Code | `claude` | `claude`, `opus`, `sonnet`, `haiku` |
 | Grok Build | `grok` | `grok-4.6`, `grok-4.5` |
 | Codex | `codex` | account default, `gpt-5.6-sol` |
 

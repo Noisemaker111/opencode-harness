@@ -139,6 +139,10 @@ const PROVIDER_TO_SOURCE: Record<string, string> = {
   xai: "xai",
   anthropic: "claude",
   claude: "claude",
+  "claude-code": "claude-code",
+  "grok-build": "grok-build",
+  codex: "codex",
+  openrouter: "openrouter",
 }
 
 const KIND: Record<string, string> = {
@@ -149,7 +153,16 @@ const KIND: Record<string, string> = {
   "grok-sub": "sub", // SuperGrok subscription via local proxy
   xai: "metered", // x.ai API per-token
   claude: "sub", // Claude Code capacity is unknown unless officially reported
+  "claude-code": "sub", // official Claude CLI subscription via the local bridge
+  "grok-build": "sub", // official Grok CLI subscription via the local bridge
+  codex: "sub", // official Codex CLI subscription via the local bridge
+  openrouter: "metered",
 }
+
+// These providers are configured local lanes even when they have no recent DB
+// row yet. Keeping a shell entry makes /usage honest about what can be picked:
+// unknown is visibly different from an absent provider.
+const CONFIGURED_SOURCES = ["claude-code", "grok-build", "codex", "openrouter"]
 
 type ProbeSpec = { source: string; urls: string[]; headers?: Record<string, string> }
 
@@ -647,7 +660,11 @@ function parseProbeUsage(body: string): any | undefined {
         const hasUsage = value.usage != null || value.limit != null || value.used != null || value.remaining != null || value.quota != null ||
           value.percent != null || value.percentUsed != null || value.usagePercent != null || value.usedPercent != null
         if (hasUsage) {
-          const out = { ...value }
+          // Several compatible proxies wrap the actual payload in `usage`.
+          // Returning the wrapper made mergeProbeIntoSource miss its windows
+          // and fall back to a blank 5h row.
+          const nested = value.usage && typeof value.usage === "object" && !Array.isArray(value.usage) ? value.usage : undefined
+          const out = { ...(nested ?? value) }
           if (out.percent == null) out.percent = out.percentUsed ?? out.usagePercent ?? out.usedPercent
           return out
         }
@@ -725,14 +742,16 @@ function resetSecondsFrom(j: any): number | undefined {
 async function runProbes(): Promise<ProbeResult[]> {
   return Promise.all(
     PROBES.map(async (p) => {
-      const results: { ok: boolean; status?: number; body?: string; error?: string }[] = []
-      for (const url of p.urls) {
+      // Probe endpoints concurrently. A sequential 4 x 5s Cursor fallback
+      // used to outlive the TUI's 8s collector wait and leave /usage showing
+      // stale or empty data even when a later endpoint was reachable.
+      const results = await Promise.all(p.urls.map(async (url) => {
         try {
-          results.push(await fetchProbe(url, 5_000, p.headers ?? await providerProbeHeaders(p.source, url)))
+          return await fetchProbe(url, 5_000, p.headers ?? await providerProbeHeaders(p.source, url))
         } catch (error) {
-          results.push({ ok: false, error: String(error).slice(0, 120) })
+          return { ok: false, error: String(error).slice(0, 120) }
         }
-      }
+      }))
       const alive = results.some((r, i) => r.ok && /\/ping(?:[/?#]|$)/i.test(p.urls[i]))
       const anyReply = results.some((r) => r.status != null)
       const usageFailure = results.find((r, i) => !/\/ping(?:[/?#]|$)/i.test(p.urls[i]) && !r.ok && r.status !== 404)
@@ -816,10 +835,10 @@ function detectGoLimitError(db: any, since: number): { hit: boolean; detail: str
       const row = db
         .query(
           `SELECT id FROM ${table} WHERE time_created > ? AND (
-            data LIKE '%5-hour usage limit%'
-            OR data LIKE '%weekly usage limit%'
-            OR data LIKE '%7-day usage limit%'
-            OR data LIKE '%monthly usage limit%'
+            (data LIKE '%5-hour usage limit%' AND data LIKE '%opencode-go%')
+            OR (data LIKE '%weekly usage limit%' AND data LIKE '%opencode-go%')
+            OR (data LIKE '%7-day usage limit%' AND data LIKE '%opencode-go%')
+            OR (data LIKE '%monthly usage limit%' AND data LIKE '%opencode-go%')
             OR (data LIKE '%usage limit reached%' AND data LIKE '%opencode-go%')
             OR ((data LIKE '%"statusCode":402%' OR data LIKE '%"code":"402"%' OR data LIKE '%"code":402%') AND data LIKE '%opencode-go%')
           ) LIMIT 1`,
@@ -977,7 +996,7 @@ function mergeProbeIntoSource(agg: SourceAgg | undefined, probe: ProbeResult): v
     }
     return
   }
-  const label = typeof j.window === "string" ? j.window : typeof j.windowLabel === "string" ? j.windowLabel : "5h"
+  const label = typeof j.window === "string" ? j.window : typeof j.windowLabel === "string" ? j.windowLabel : typeof j.label === "string" ? j.label : "5h"
   const now = Date.now()
   let win = agg.windows.windows[label]
   if (!win) {
@@ -1083,11 +1102,32 @@ function buildCache(
       })
     }
   }
+  // Configured harness/metered lanes may be perfectly usable while still
+  // having no provider usage API or recent OpenCode DB message. Include them
+  // as unknown shells instead of making the picker and /usage disagree about
+  // what exists.
+  for (const id of CONFIGURED_SOURCES) {
+    if (sourcesOut.some((s) => s.id === id)) continue
+    const plan = planMap[id]
+    sourcesOut.push({
+      id,
+      kind: KIND[id] ?? "sub",
+      source: "config",
+      windows: WINDOWS.map((w) => {
+        const planCap = plan?.windows?.find((p: any) => p.label === w.label)?.cap
+        return finalizeWindow(w.label, w.ms, undefined, { now: now.getTime(), planCap, sourceId: id, estimated: plan?.estimated })
+      }),
+      dbCost: 0,
+      probe: "none",
+      probeDetail: "configured provider; no usage probe",
+      models: [],
+    })
+  }
   // omit sources with zero usage AND no probe data at all (raw probe, before shortening)
   const kept = sourcesOut.filter((s) => {
     const hasUsage = s.windows?.some((w: any) => w.usedTokens > 0 || w.used > 0) ?? false
     const hasProbe = s.probe != null && s.probe !== "none"
-    return hasUsage || hasProbe
+    return hasUsage || hasProbe || s.source === "config" || CONFIGURED_SOURCES.includes(s.id)
   })
   for (const s of kept) {
     // Probe = probe result (ok/none/err). Window cap lives on window.status/pct, not here.
@@ -1216,9 +1256,13 @@ async function collectMain() {
   const goMerge = mergeGoApiIntoSource(goAgg, goProbe)
   // Unknown/unreachable Go quota is fail-closed: never rebuild a healthy-looking
   // Go entry after a 403/network failure and let a spawn hit the provider blind.
+  // Heuristic DB chatter (e.g. reasoning that mentions "5-hour usage limit")
+  // must not override a healthy probe; only consider it when the probe itself
+  // is unavailable.
   const unavailableGo = goProbe.status !== "ok"
-  const apiCapHit = goMerge.apiCapHit || unavailableGo || goLimitError.hit
-  const apiCapDetail = goMerge.apiCapDetail ?? (goLimitError.hit ? `heuristic: ${goLimitError.detail}` : `Go usage API unavailable (${goProbe.status})`)
+  const heuristicHit = goLimitError.hit && unavailableGo
+  const apiCapHit = goMerge.apiCapHit || unavailableGo || heuristicHit
+  const apiCapDetail = goMerge.apiCapDetail ?? (heuristicHit ? `heuristic: ${goLimitError.detail}` : `Go usage API unavailable (${goProbe.status})`)
   if (apiCapHit) log(`GO CAP HIT (${apiCapDetail})`)
   applyPriorCache(bySource, previous)
   const cache = buildCache(bySource, probes, plans, now, { "opencode-go": { apiCapHit, apiCapDetail } })

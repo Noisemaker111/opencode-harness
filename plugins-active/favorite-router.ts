@@ -8,7 +8,6 @@ import { assertSafeShell } from "../scripts/shell-guard"
 import { expireExecutionLeases, readLedger, recordNotification, recordSpawn, recordSpawnResult, recordTerminal, trackedChildren } from "../orchestration/orchestration-ledger"
 import { recordPluginHealth, clearPluginHealth } from "../plugin-health"
 import { blockLane, laneBlock, taskState } from "../models/capacity-registry"
-import { claudeCodeTaskTool, claudeCodeTool, installClaudeCodeIntercept, runClaudeCodeTask } from "./claude-code-task"
 import {
   discoverModelsText,
   ensureClaudeCodeCatalog,
@@ -49,9 +48,6 @@ import {
   readFavorites, rememberFailoverNotice, spawnLane, systemPart, enforceSessionModelChange,
 } from "../models/model-routing"
 export * from "../models/model-routing"
-// The Task intercept now lives with the harness it drives. Re-exported so
-// existing importers keep one entry point.
-export { claudeCodeScopeFromTask, installClaudeCodeIntercept, interceptClaudeCodeTask, type ClaudeCodeDirectResult } from "./claude-code-task"
 
 export { windowCapped, usageSummaryLine }
 
@@ -193,8 +189,6 @@ export default define({
     const tool = (ctx as { tool?: { transform?: Function } }).tool
     if (tool?.transform) {
       await tool.transform((draft: { add: (tool: unknown) => void }) => {
-          draft.add(claudeCodeTaskTool)
-          draft.add(claudeCodeTool)
          draft.add({
            name: "pick_model",
           description:
@@ -240,7 +234,6 @@ export default define({
     // Never turn a hook registration defect into an accepted-but-never-started
     // Task or a dead session; the health journal records the disabled hook.
     for (const [name, install] of [
-      ["claude-code-intercept", () => installClaudeCodeIntercept(ctx, runClaudeCodeTask, (hook, name, callback) => safeToolHook(hook, name, callback, true))],
       ["claude-code-session", () => installClaudeCodeSession(ctx)],
       ["shell-guard", () => installShellGuard(ctx)],
       ["tool-output-truncation", () => installToolOutputTruncation(ctx)],

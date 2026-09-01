@@ -6,6 +6,7 @@ import type { HarnessID, HarnessSpec } from "./types"
 
 export { parseJsonl } from "./types"
 export type { HarnessID, HarnessModel, HarnessSpec, HarnessStreamEvent } from "./types"
+export * from "./opencode-mcp"
 
 export const HARNESSES: Record<HarnessID, HarnessSpec> = {
   "claude-code": claudeCode,

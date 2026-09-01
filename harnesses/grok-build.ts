@@ -1,4 +1,5 @@
 import type { HarnessSpec, HarnessStreamEvent } from "./types"
+import { grokLineToOc } from "./harness-json-to-oc"
 
 /**
  * xAI's Grok CLI. `-p/--single` is its single-turn headless mode; `-c/--continue`
@@ -28,8 +29,9 @@ export const grokBuild: HarnessSpec = {
   // streamed line-by-line as text deltas and the trailing stdout (the parse())
   // is deduplicated downstream by prefix match.
   streamEventLine: (line: string): HarnessStreamEvent | undefined => {
-    if (!line.trim()) return undefined
-    return { kind: "text", text: line + "\n" }
+    const pretty = grokLineToOc(line)
+    if (!pretty.trim()) return undefined
+    return { kind: "text", text: pretty + "\n" }
   },
   versionArgs: ["--version"],
 }

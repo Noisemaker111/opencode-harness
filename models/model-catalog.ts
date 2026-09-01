@@ -129,6 +129,7 @@ export const CLAUDE_CODE_MODELS: CatalogModel[] = [
   { providerID: CLAUDE_CODE_PROVIDER, modelID: "claude", name: "Claude Code", family: "claude", favorite: true, lane: "sub", readiness: "ready", capabilities: { tools: true, reasoning: true } },
   { providerID: CLAUDE_CODE_PROVIDER, modelID: "opus", name: "Claude Code Opus", family: "claude", lane: "sub", readiness: "ready", capabilities: { tools: true, reasoning: true } },
   { providerID: CLAUDE_CODE_PROVIDER, modelID: "sonnet", name: "Claude Code Sonnet", family: "claude", lane: "sub", readiness: "ready", capabilities: { tools: true, reasoning: true } },
+  { providerID: CLAUDE_CODE_PROVIDER, modelID: "haiku", name: "Claude Code Haiku", family: "claude", lane: "sub", readiness: "ready", capabilities: { tools: true, reasoning: true } },
 ]
 
 export function isClaudeCodeModel(ref: unknown): boolean {

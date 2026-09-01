@@ -636,7 +636,7 @@ function routingCard(favs: Fav[]) {
     "Go-quota/Sub/Free lanes are cheap for you even if the list price looks big (Luna/Sol ride OpenAI subs; Grok 4.6 rides SuperGrok via the grok-sub provider ONLY - xai/* bills API per token). Metered = pay-per-token.",
     "Flash/Pro/fast suffixes are NAMES, not speed or quality guarantees - trust the cost column and curated BEST/AVOID.",
     "If the user names a model, use that. `general` is isolation, not a quality upgrade. `explore` is read-only search.",
-    "HARNESS OPTION: Claude Code (Harness) / claude-code. Picker identity: claude-code/claude (also opus/sonnet). Fuzzy names: claude, claude code, harness, sonnet, opus. Session chat and Task(agent=claude-code) both use the official CLI — never a relay LLM. Direct tool: `claude_code_task` with required `scope`.",
+    "HARNESS OPTION: Claude Code (Harness) / claude-code. Picker identity: claude-code/claude (also opus/sonnet/haiku). Fuzzy names: claude, claude code, harness, sonnet, opus, haiku. Session chat and Task(agent=claude-code) both use the official CLI — never a relay LLM. Direct tool: `claude_code_task` with required `scope`.",
     "",
   ]
   if (!favs.length) {
