@@ -37,7 +37,7 @@ export type OpencodeMcpAgentInput = {
 export const OPENCODE_MCP_TOOLS = [
   {
     name: "agent",
-    description: "Start a model worker through the OpenCode server, never an in-process Task/subagent. Exposed to OpenCode as mcp_agent. Works from any harness and always returns immediately.",
+    description: "Harness-only: start an OpenCode worker from a vendor CLI. OpenCode itself uses native subagent.",
     inputSchema: {
       type: "object" as const,
       properties: {

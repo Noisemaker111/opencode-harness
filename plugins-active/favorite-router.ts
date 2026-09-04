@@ -184,7 +184,7 @@ export default define({
 
     // /usage is a TUI palette slash (usage/tui-active/usage.tsx). usage_status
     // lives in usage/server.ts. Do not register either here — command.transform
-    // steals the slash into a synthetic chat turn. running_tasks stays as a tool.
+    // steals the slash into a synthetic chat turn.
 
     const tool = (ctx as { tool?: { transform?: Function } }).tool
     if (tool?.transform) {

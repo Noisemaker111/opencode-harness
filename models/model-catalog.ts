@@ -83,8 +83,11 @@ export function discoverModels(source: unknown): CatalogModel[] {
         },
       })
       result.push(base)
-      const variants = recordOf(m.variants)
-      for (const [variant, rawVariant] of Object.entries(variants ?? {})) {
+      // OpenCode 2 writes variants as [{ id, settings }]; the keyed-object form is still read for older configs.
+      const variantEntries: Array<[string, unknown]> = Array.isArray(m.variants)
+        ? (m.variants as unknown[]).flatMap((entry) => { const row = recordOf(entry); return row && typeof row.id === "string" ? [[row.id, row] as [string, unknown]] : [] })
+        : Object.entries(recordOf(m.variants) ?? {})
+      for (const [variant, rawVariant] of variantEntries) {
         const details = recordOf(rawVariant) ?? {}
         result.push({ ...base, variant, name: typeof details.name === "string" ? details.name : base.name })
       }

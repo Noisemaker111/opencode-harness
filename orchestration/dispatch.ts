@@ -30,7 +30,7 @@ export function splitProviderModel(value: string): { providerID: string; modelID
 }
 
 export function taskDescription(input: Record<string, unknown>): string {
-  return text(input.task)
+  return text(input.task) || text(input.prompt) || text(input.description)
 }
 
 export function canonicalWorkerTitle(identity: Pick<WorkerIdentity, "providerID" | "modelID" | "task">): string {
@@ -50,6 +50,22 @@ export function claudeModelAlias(model: unknown): string | undefined {
   return CLAUDE_MODELS.has(alias) ? alias : undefined
 }
 
+/** Short names Jk actually says. Claude Code rides the in-process harness bridge as a normal provider. */
+export const MODEL_ALIASES: Record<string, { providerID: string; modelID: string }> = {
+  claude: { providerID: "claude-code", modelID: "opus" },
+  "claude-code": { providerID: "claude-code", modelID: "opus" },
+  opus: { providerID: "claude-code", modelID: "opus" },
+  sonnet: { providerID: "claude-code", modelID: "sonnet" },
+  haiku: { providerID: "claude-code", modelID: "haiku" },
+  grok: { providerID: "cliproxyapi", modelID: "grok-4.6" },
+  codex: { providerID: "codex", modelID: "default" },
+}
+
+export function aliasModel(value: unknown): { providerID: string; modelID: string } | undefined {
+  const raw = text(value).toLowerCase()
+  return raw ? MODEL_ALIASES[raw] : undefined
+}
+
 function normalizeMuseModel(value: unknown): { providerID: string; modelID: string } | undefined {
   const raw = text(value)
   if (!raw) return
@@ -57,48 +73,50 @@ function normalizeMuseModel(value: unknown): { providerID: string; modelID: stri
   if (/muse/i.test(raw)) return { providerID: "openai", modelID: "gpt-5.6-luna-fast" }
 }
 
+const DISPATCH_TOOLS = /^(task|subagent)$/i
+
 /**
- * Fail-closed dispatch boundary. Task/subagent can no longer start anything;
- * every model worker must enter through the local MCP server's mcp_agent tool.
+ * Fail-closed dispatch boundary. Approved Quest work enters through the native
+ * subagent/task tool with only questID, cwd, and a short task. Role and runtime
+ * are derived; callers may not select them.
  */
 export function canonicalizeDispatch(event: unknown): WorkerIdentity | undefined {
   const ev = (event ?? {}) as Record<string, unknown>
   const tool = text(ev.tool ?? ev.name)
-  if (/^(task|subagent)$/i.test(tool)) throw new Error("Direct Task/subagent dispatch is disabled; use mcp_agent")
-  if (!/^mcp_agent$/i.test(tool)) return
+  if (!DISPATCH_TOOLS.test(tool)) return
 
   const input = (ev.input ?? ev.args) as Record<string, unknown> | undefined
-  if (!input || typeof input !== "object") throw new Error("mcp_agent requires an input object")
+  if (!input || typeof input !== "object") throw new Error("Quest dispatch requires an input object")
   const forbidden = FORBIDDEN_CALLER_FIELDS.find((field) => field in input)
-  if (forbidden) throw new Error(`mcp_agent derives hidden role/runtime; caller field ${forbidden} is forbidden`)
+  if (forbidden) throw new Error(`Quest dispatch derives hidden role/runtime; caller field ${forbidden} is forbidden`)
 
   const task = taskDescription(input)
-  if (!task) throw new Error("mcp_agent requires task")
-  if (!text(input.questID)) throw new Error("mcp_agent requires questID")
-  const selected = splitProviderModel(text(input.model)) ?? normalizeMuseModel(input.model)
-  if (!selected) throw new Error("mcp_agent requires an explicit provider/model selected by the picker")
-  if (selected.providerID === "claude-code" && !claudeModelAlias(`${selected.providerID}/${selected.modelID}`)) {
+  if (!task) throw new Error("Quest dispatch requires task")
+  if (!text(input.questID)) throw new Error("Quest dispatch requires questID")
+  const selected = splitProviderModel(text(input.model)) ?? aliasModel(input.model) ?? normalizeMuseModel(input.model)
+  if (text(input.model) && !selected) throw new Error("Quest dispatch model must be an explicit provider/model")
+  if (selected?.providerID === "claude-code" && !claudeModelAlias(`${selected.providerID}/${selected.modelID}`)) {
     throw new Error("claude-code only accepts claude-code/{claude|default|opus|sonnet|haiku}")
   }
 
   const parentID = text(ev.sessionID ?? ev.parentSessionID)
   const runID = text(ev.callID ?? ev.id ?? ev.messageID)
-  if (!parentID || !runID) throw new Error("mcp_agent requires parent session and run IDs")
+  if (!parentID || !runID) throw new Error("Quest dispatch requires parent session and run IDs")
   const identity: WorkerIdentity = {
-    // The Quest tracker changes this to orchestrator only for the first owner
-    // of an ownerless Quest. It is never accepted from the caller.
     agentRole: "worker",
-    providerID: selected.providerID,
-    modelID: selected.modelID,
-    runtime: selected.providerID === "claude-code" ? "claude-code" : "native",
+    providerID: selected?.providerID ?? "",
+    modelID: selected?.modelID ?? "",
+    // A native subagent stays native even on the claude-code provider: the CLI sits behind the bridge, the session is OpenCode's.
+    runtime: "native",
     parentID,
     runID,
     task,
   }
-  input.model = `${selected.providerID}/${selected.modelID}`
+  if (selected) input.model = `${selected.providerID}/${selected.modelID}`
   ev.workerIdentity = identity
   const metadata = ev.metadata && typeof ev.metadata === "object" ? ev.metadata as Record<string, unknown> : {}
-  ev.metadata = { ...metadata, worker: { ...identity, title: canonicalWorkerTitle(identity) } }
+  const title = identity.providerID && identity.modelID ? canonicalWorkerTitle(identity) : identity.task
+  ev.metadata = { ...metadata, worker: { ...identity, title } }
   return identity
 }
 

@@ -82,8 +82,6 @@ const LANE_LABEL: Record<Lane, string> = {
 }
 
 
-// Integration must call running_tasks(includeRecent: true) itself before reporting CLEAN.
-
 // ---- Go-cap spawn guard. Cache/collector/formatters: usage-lib.ts. usage_status: plugins-active/usage.ts. ----
 
 /** Sol is an escalation lane, never an automatic implementation choice when
@@ -167,7 +165,7 @@ export function quotaLaneNotice(usage?: UsageCache): string | undefined {
   return cap.hit ? capMessage(QUOTA_LANE.providerID, cap) : undefined
 }
 
-const XAI_NEVER_MSG = "Never use xai/* (metered). Grok = grok-sub/grok-4.6 SuperGrok sub."
+const XAI_NEVER_MSG = "Never use xai/* (metered). Grok = cliproxyapi/grok-4.6 (SuperGrok via CLIProxyAPI on 127.0.0.1:8317)."
 
 /**
  * A cache is authoritative for a provider only when it holds a fresh,
@@ -196,10 +194,10 @@ function quotaUnreadable(providerID: string, cache: UsageCache | undefined): boo
   return QUOTA_AUTHORITY_REQUIRED.has(providerID) && !hasAuthoritativeQuota(providerID, cache)
 }
 
-/** xai/* bills api.x.ai per token. SuperGrok is grok-sub via :3011. */
+/** xai/* bills api.x.ai per token. SuperGrok rides CLIProxyAPI (cliproxyapi/grok-4.6); grok-sub stays the lane id for usage and capacity. */
 function demeterXai(fav: Fav): Fav {
-  if (fav.providerID !== "xai") return fav
-  return { providerID: "grok-sub", modelID: fav.modelID }
+  if (fav.providerID !== "xai" && fav.providerID !== "grok-sub") return fav
+  return { providerID: "cliproxyapi", modelID: fav.modelID }
 }
 
 /** Read-modify-write apiCapHit on the opencode-go source only. Does not rebuild the cache. */
@@ -485,7 +483,7 @@ export function spawnProvider(args: unknown): string | undefined {
   if (!blob) return
   if (/opencode-go/i.test(blob) || /model-opencode-go-/i.test(blob)) return "opencode-go"
   if (/openrouter/i.test(blob) || /model-openrouter-/i.test(blob)) return "openrouter"
-  if (/grok-sub/i.test(blob) || /model-grok-sub-/i.test(blob)) return "grok-sub"
+  if (/grok-sub|cliproxyapi/i.test(blob) || /model-grok-sub-/i.test(blob)) return "grok-sub"
   if (/\bxai\b/i.test(blob) || /model-xai-/i.test(blob)) return "xai"
   if (/model-openai-/i.test(blob) || /\bopenai\//i.test(blob)) return "openai"
   if (/model-cursor-/i.test(blob) || /\bcursor\//i.test(blob)) return "cursor"
@@ -500,15 +498,17 @@ function spawnNeedsFailover(provider: string | undefined, cache?: UsageCache): b
   return Boolean(laneBlock(provider))
 }
 
-const FALLBACK_GROK = { providerID: "grok-sub", modelID: "grok-4.6" }
+const FALLBACK_GROK = { providerID: "cliproxyapi", modelID: "grok-4.6" }
 const FALLBACK_LUNA = { providerID: "openai", modelID: "gpt-5.6-luna-fast" }
 const FALLBACK_GLM = { providerID: "openrouter", modelID: "z-ai/glm-5.3-flash" }
 
 function providerHealthy(providerID: string, cache?: UsageCache): boolean {
   if (providerID === "xai") return false
-  if (providerCapBlocked(providerID, cache)) return false
-  if (laneBlock(providerID)) return false
-  if (quotaUnreadable(providerID, cache)) return false
+  // Usage, caps and lane blocks are keyed by lane (cliproxyapi/grok-4.6 rides the grok-sub lane).
+  const lane = spawnLane(providerID)
+  if (providerCapBlocked(lane, cache)) return false
+  if (laneBlock(lane)) return false
+  if (quotaUnreadable(lane, cache)) return false
   return true
 }
 
@@ -519,16 +519,16 @@ export function nextHealthyFallback(from: string, cache?: UsageCache): { provide
     : from === "grok-sub" ? [FALLBACK_LUNA, FALLBACK_GLM]
     : from === "openrouter" ? [FALLBACK_GROK, FALLBACK_LUNA]
     : [FALLBACK_GROK, FALLBACK_LUNA, FALLBACK_GLM]
-  const candidates = order.filter((target) => target.providerID !== from && providerHealthy(target.providerID, cache))
+  const candidates = order.filter((target) => spawnLane(target.providerID) !== spawnLane(from) && providerHealthy(target.providerID, cache))
   const capacity = usageCapacitySnapshot(cache)
-  const observedHealthy = candidates.find((target) => capacity.providers[target.providerID]?.state === "available")
+  const observedHealthy = candidates.find((target) => (capacity.providers[spawnLane(target.providerID)] ?? capacity.providers[target.providerID])?.state === "available")
   if (observedHealthy) return observedHealthy
   return candidates[0] ?? FALLBACK_GLM
 }
 
 export function spawnLane(target: string): string {
   if (/openrouter/i.test(target)) return "openrouter"
-  if (/grok/i.test(target)) return "grok-sub"
+  if (/grok|cliproxyapi/i.test(target)) return "grok-sub"
   if (/opencode-go/i.test(target)) return "opencode-go"
   if (/openai/i.test(target)) return "openai"
   if (/cursor/i.test(target)) return "cursor"
@@ -633,7 +633,7 @@ function routingCard(favs: Fav[]) {
   const lines = [
     "MODEL ROUTING - pick the cheapest favorite that can do the job.",
     "Prices are real list $/1M from models.dev cache, sorted by output price.",
-    "Go-quota/Sub/Free lanes are cheap for you even if the list price looks big (Luna/Sol ride OpenAI subs; Grok 4.6 rides SuperGrok via the grok-sub provider ONLY - xai/* bills API per token). Metered = pay-per-token.",
+    "Go-quota/Sub/Free lanes are cheap for you even if the list price looks big (Luna/Sol ride OpenAI subs; Grok 4.6 rides SuperGrok via cliproxyapi/grok-4.6 (CLIProxyAPI) ONLY - xai/* bills API per token). Metered = pay-per-token.",
     "Flash/Pro/fast suffixes are NAMES, not speed or quality guarantees - trust the cost column and curated BEST/AVOID.",
     "If the user names a model, use that. `general` is isolation, not a quality upgrade. `explore` is read-only search.",
     "HARNESS OPTION: Claude Code (Harness) / claude-code. Picker identity: claude-code/claude (also opus/sonnet/haiku). Fuzzy names: claude, claude code, harness, sonnet, opus, haiku. Session chat and Task(agent=claude-code) both use the official CLI — never a relay LLM. Direct tool: `claude_code_task` with required `scope`.",
@@ -716,10 +716,10 @@ export function pickModel(task: string, favs: Fav[], usage?: UsageCache) {
   }
   const pool = (capHit ? safeFavs.filter((fav) => inferProfile(fav, profiles).lane !== QUOTA_LANE.lane) : safeFavs)
     .filter((fav) => inferProfile(fav, profiles).lane !== "metered")
-    .filter((fav) => !providerCapBlocked(fav.providerID, usage))
+    .filter((fav) => !providerCapBlocked(spawnLane(fav.providerID), usage))
     .filter((fav) => inferProfile(fav, profiles).id !== "gpt-5.6-sol" || solAutomaticSelectionAllowed(task, usage))
   if (capHit && pool.length === 0) {
-    const grok = safeFavs.find((fav) => fav.providerID === "grok-sub") ?? { providerID: "grok-sub", modelID: "grok-4.6" }
+    const grok = safeFavs.find((fav) => fav.providerID === "cliproxyapi" || fav.providerID === "grok-sub") ?? FALLBACK_GROK
     const chosen = demeterXai(grok)
     const profile = inferProfile(chosen, profiles)
     return {
@@ -741,7 +741,7 @@ export function pickModel(task: string, favs: Fav[], usage?: UsageCache) {
       if (profile.lane === "sub") score += 16
       if (profile.lane === "metered") score -= 40
       if (capHit) {
-        if (fav.providerID === "grok-sub") score += 50
+        if (spawnLane(fav.providerID) === "grok-sub") score += 50
         else if (fav.providerID === "openai") score += 35
         if (profile.lane === "go-quota") score -= 80
       }

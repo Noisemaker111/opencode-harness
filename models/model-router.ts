@@ -38,7 +38,7 @@ export type ModelData = {
 export type UsageTelemetry = { capacity?: "available" | "exhausted" | "resetting" | "unknown"; resetAt?: number; authenticated?: boolean; recentSuccess?: number }
 
 function isSubscriptionProvider(providerID: string): boolean {
-  return ["opencode-go", "openai", "cursor", "grok-sub"].includes(providerID.toLowerCase())
+  return ["opencode-go", "openai", "cursor", "grok-sub", "cliproxyapi", "claude-code", "codex", "grok-build"].includes(providerID.toLowerCase())
 }
 
 export function telemetryFromCapacity(models: CatalogModel[], snapshot: CapacitySnapshot): Record<string, UsageTelemetry> {
@@ -53,10 +53,10 @@ export function telemetryFromCapacity(models: CatalogModel[], snapshot: Capacity
 export function applyPickedModel(input: Record<string, unknown>, models: CatalogModel[], telemetry: Record<string, UsageTelemetry>): string | undefined {
   if (typeof input.model === "string" && input.model.trim()) return input.model
   const role = String(input.agent ?? input.subagent_type ?? "").trim().toLowerCase()
-  if (role !== "build" && role !== "explore" && role !== "orchestrator") return
+  if (role !== "build" && role !== "explore") return
   const task = String(input.task ?? input.prompt ?? input.description ?? input.title ?? "").trim()
   if (!task) return
-  const picked = pickAvailableModel(role === "orchestrator" ? `orchestrate and plan: ${task}` : task, models, telemetry)
+  const picked = pickAvailableModel(task, models, telemetry)
   if (!picked) return
   const model = `${picked.model.providerID}/${picked.model.modelID}`
   input.model = model
@@ -325,7 +325,7 @@ export function routingCard(favs: Fav[], profiles = loadProfiles(), cache = read
   }
   lines.push("")
   lines.push(
-    "DEFAULT: Muse Spark 1.2 Contributor for ~90% of tasks — impl, tests, refactors, debug, UI/HUD, frontend, scene/codegen, grunt, bulk edits, docs, parallel fan-out, most coding (also most ops). GLM Flash only for tiny utility/ops when explicitly requesting cheapest 1M run — not default. Grok 4.6 (grok-sub only, never xai/*) only for hard debugging/long rewrites/when Muse shortcuts. DeepSeek Flash not default (Muse replaces it). Design/creativity/architecture -> Kimi K3 (slow, deliberate). Review -> hy3 (luna-fast while Go capped). Escalate Luna/Sol only when named or cheaper already failed.",
+    "DEFAULT: Muse Spark 1.2 Contributor for ~90% of tasks — impl, tests, refactors, debug, UI/HUD, frontend, scene/codegen, grunt, bulk edits, docs, parallel fan-out, most coding (also most ops). GLM Flash only for tiny utility/ops when explicitly requesting cheapest 1M run — not default. Grok 4.6 (cliproxyapi/grok-4.6 only, never xai/*) only for hard debugging/long rewrites/when Muse shortcuts. DeepSeek Flash not default (Muse replaces it). Design/creativity/architecture -> Kimi K3 (slow, deliberate). Review -> hy3 (luna-fast while Go capped). Escalate Luna/Sol only when named or cheaper already failed.",
   )
   lines.push(
     "Curation lives in model-profiles.json; costs come from models-cache.json (auto-refreshed from models.dev). Edit profiles, then `bun favorite-agents.ts sync`.",

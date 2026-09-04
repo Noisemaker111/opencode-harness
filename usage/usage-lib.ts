@@ -308,25 +308,36 @@ export function quotaSummaryLine(cache: UsageCache | undefined): string {
     return `QUOTA: unavailable (${ageBit}) — do not dispatch opencode-go/* until usage is known`
   }
 
-  const parts = cache.sources.map((source) => {
+  const parts = cache.sources.flatMap((source) => {
     const windows = source.windows ?? []
+    const live = windows.some((w) => w.provenance === "provider-observed" || w.pct != null || windowCapped(w)) || Boolean(source.apiCapHit) || source.probe === "ok"
+    if (!live) return []
     const win = windows.find((candidate) => windowCapped(candidate)) ??
+      windows.find((candidate) => candidate.provenance === "provider-observed") ??
       windows.find((candidate) => candidate.label === "5h") ??
       windows.find((candidate) => candidate.pct != null || candidate.status) ??
       windows[0]
     const short = USAGE_SHORT[source.id] ?? source.id
     if (!win) {
       const probe = source.probe === "ok" ? "ok" : source.probe === "cap" ? "CAP" : "unknown"
-      return `${short} ${probe}`
+      return [`${short} ${probe}`]
     }
-    const pct = win.pct == null ? "?" : `${win.estimated ? "~" : ""}${Math.round(win.pct)}%`
+    const used = win.pct == null ? null : Math.round(win.pct)
+    const left = win.remaining != null && Number.isFinite(win.remaining)
+      ? Math.round(win.remaining)
+      : used != null ? Math.max(0, 100 - used) : null
+    const pct = used == null ? "?" : `${win.estimated ? "~" : ""}${used}%`
+    const leftBit = left == null ? "" : ` ${left}% left`
     const state = windowCapped(win)
       ? "CAP"
-      : win.status === "ok" || (win.status == null && win.pct != null && win.pct < 100)
+      : win.status === "ok" || (win.status == null && used != null && used < 100)
         ? "ok"
         : win.status ?? "unknown"
-    return `${short} ${win.label || "?"} ${pct} ${state}`
+    return [`${short} ${win.label || "?"} ${pct}${leftBit} ${state}`]
   })
+  if (!parts.length) {
+    return `QUOTA: unavailable (${ageBit}) — do not dispatch opencode-go/* until usage is known`
+  }
   const goBlocked = cache.sources.some((source) => source.id === "opencode-go" &&
     (source.apiCapHit || (source.windows ?? []).some((win) => windowCapped(win))))
   const instruction = goBlocked ? " — do not dispatch opencode-go/*" : ""

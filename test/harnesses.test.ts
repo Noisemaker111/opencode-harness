@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
-import { HARNESSES, OPENCODE_MCP_TOOLS, harnessFor, harnessForProvider, harnessList, resolveHarnessName } from "../harnesses"
+import { HARNESSES, harnessFor, harnessForProvider, harnessList, resolveHarnessName } from "../harnesses"
 import { streamErrorMessage } from "../plugins-active/harness-run"
 
 
@@ -20,17 +20,16 @@ test("providers map back to exactly one harness", () => {
   expect(harnessForProvider("openai")).toBeUndefined()
 })
 
-test("mcp_agent requires Quest lineage and exposes no caller-selected role", () => {
-  const agent = OPENCODE_MCP_TOOLS.find((tool) => tool.name === "agent")!
-  expect(agent.inputSchema.required).toEqual(["task", "questID", "model"])
-  expect(agent.inputSchema.properties).toHaveProperty("questID")
-  expect(agent.inputSchema.properties).toHaveProperty("sessionID")
-  for (const field of ["agent", "role", "runtime", "agentRole"]) expect(agent.inputSchema.properties).not.toHaveProperty(field)
+test("native subagent is the Quest dispatch path", () => {
   const root = join(import.meta.dir, "..")
   const config = readFileSync(join(root, "opencode.jsonc"), "utf8")
-  expect(config).toMatch(/"mcp"\s*:\s*\{[\s\S]*?"command"\s*:\s*\["node",\s*"C:\/Users\/Jk101\/\.config\/opencode\/harnesses\/opencode-mcp-stdio\.mjs"\]/)
-  expect(config).toMatch(/"task"\s*:\s*false/)
-  expect(config).toMatch(/"subagent"\s*:\s*false/)
+  expect(config).toMatch(/"subagent_depth"\s*:\s*1/)
+  expect(config).toMatch(/"task"\s*:\s*true/)
+  expect(config).toMatch(/"subagent"\s*:\s*true/)
+  expect(config).not.toMatch(/"orchestrator"\s*:/)
+  // The MCP server block may stay for the desk flow, but the Quest giver never gets mcp_* tools.
+  expect(config).not.toMatch(/"mcp_agent"\s*:\s*true/)
+  expect(config).toMatch(/"mcp_agent"\s*:\s*false/)
 })
 
 test("codex omits -m for the account default", () => {

@@ -67,18 +67,19 @@
       "priceOutput": 0.07,
       "context": 256000,
       "output": 64000,
-      "best": "schemas, types, contracts, fail-closed, instruction fidelity, final reviews",
-      "avoid": "huge-context dumps, vision, loose exploratory codegen",
-      "notes": "Cheapest on Go; best instruction following; 256k context. cheapest + precise = the configured reviewer model."
+      "best": "NOTHING — banned 2026-09-02",
+      "avoid": "everything. Never dispatch hy3, hy4-preview, or hy3-preview.",
+      "notes": "Jon: never use Hy3 or Hy4 for anything. Review goes to Sol xhigh or GLM-5.3."
     },
     {
       "id": "muse-spark",
-      "model": "opencode-go/muse-spark-1.2-contributor",
+      "model": "opencode-go/muse-spark-1.3-contributor",
       "match": [
         "muse-spark",
+        "muse-spark-1.3-contributor",
         "muse-spark-1.2-contributor"
       ],
-      "name": "Muse Spark 1.2 Contributor",
+      "name": "Muse Spark 1.3 Contributor",
       "lane": "go-quota",
       "tier": "codegen",
       "priceInput": 0.1,
@@ -87,7 +88,7 @@
       "output": 131072,
       "best": "DEFAULT WORKHORSE — 90% of worker tasks: impl, tests, refactors, debugging, UI/HUD, frontend, scene/codegen, grunt, bulk edits, docs, parallel fan-out, most coding",
       "avoid": "fail-closed types, security-sensitive, when it takes shortcuts → escalate to Grok 4.6 (grok-sub) or Kimi",
-      "notes": "Go-quota cheap ($0.1/$0.2) and treated as unlimited — default for ~90% of tasks that would have gone to GLM/DeepSeek/Grok. Observed shortcutting — use Grok/Kimi when instruction fidelity fails."
+      "notes": "Go default as of 2026-09-02. 1.3 has no DeepSWE row yet; 1.2 xhigh was 55%. Same $0.10/$0.20 and 45k req/5h. Contributor trains on prompts. Fall back to 1.2 if 1.3 is blocked or dumb. Observed 1.2 shortcutting — escalate off Muse, not to Terra."
     },
     {
       "id": "kimi-k3",
@@ -161,7 +162,7 @@
     },
     {
       "id": "grok-4-6",
-      "model": "grok-sub/grok-4.6",
+      "model": "cliproxyapi/grok-4.6",
       "match": [
         "grok-4.6",
         "grok-4"
@@ -173,7 +174,7 @@
       "output": 500000,
       "best": "hard debugging, long rewrites, whole-file refactors, reasoning-heavy tasks when Muse takes shortcuts — fallback, not default (grok-sub only, never xai/*)",
       "avoid": "default dispatch, utility/ops, tiny edits — Muse is default; use Grok only for hard debugging/long rewrites/shortcut recovery",
-      "notes": "Grok 4.6 rides the SuperGrok $30 plan via the grok-sub provider (local proxy 3011 -> cli-chat-proxy.grok.com). Do NOT use xai/grok-4.6 - that bills api.x.ai per token. 500k/500k context/output. Use only when Muse would shortcut or reasoning depth is needed — not default."
+      "notes": "Grok 4.6 rides the SuperGrok $30 plan via CLIProxyAPI 127.0.0.1:8317 (Grok Build OAuth). Do NOT use xai/grok-4.6. Do NOT use xai/grok-4.6 - that bills api.x.ai per token. 500k/500k context/output. Use only when Muse would shortcut or reasoning depth is needed — not default."
     },
     {
       "id": "x-preview-f-free",

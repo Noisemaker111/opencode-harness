@@ -19,27 +19,42 @@
  * (`/session/{id}/prompt_async`, `/session/{id}/status`, `/config/providers`
  * are all 404 on the running server) and those calls silently no-op.
  *
- * Routes used, all confirmed against the instance's /openapi.json:
+ * Routes used, all confirmed against OpenCode 2 OpenAPI (prompt/wait/permission):
  *   POST /api/session               { title, agent, model: { providerID, id } }
  *   POST /api/session/{id}/move     { directory }
- *   POST /api/session/{id}/prompt   { text } — durably admits, returns at once
+ *   POST /api/session/{id}/prompt   { text, delivery? } — durably admits, returns at once
+ *   POST /api/session/{id}/wait     204 when the agent loop is idle (503 → poll messages)
+ *   GET  /api/session/{id}/permission
+ *   POST /api/session/{id}/permission/{requestID}/reply  { reply: "always"|"once"|"reject" }
+ *   GET  /api/session?parentID=     children of a desk parent
  *   GET  /api/session/{id}
  *   GET  /api/session/{id}/message  newest-first
  *   GET  /api/model
  */
 
-import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs"
+import { spawn } from "node:child_process"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { dirname, join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { createInterface } from "node:readline"
 
-/** Used when the caller names no model. Must exist in GET /api/model. */
+const SELF = fileURLToPath(import.meta.url)
+
+/** Used when the caller names no model. Must exist in GET /api/model. Never Luna. Never Hy3. */
 const DEFAULT_MODEL = { providerID: "opencode-go", id: "grok-4.6" }
+
+/** Desk session_start/session_prompt wait until COMPLETE unless the caller opts out with wait=0. */
+export const DEFAULT_WAIT_MS = 8 * 60 * 60 * 1000
+/** Idle parent/child continuations until COMPLETE. A tiny cap is how one-loop death returns. */
+export const DEFAULT_MAX_STEERS = 128
+/** Real OC2 ids are long (ses_ + ≥16). Fixtures like ses_wait1 / ses_valid1 / ses_desk1 are not. */
+export const LIVE_SESSION_SUFFIX_MIN = 16
 
 const TOOLS = [
   {
     name: "agent",
-    description: "Start a model worker through the OpenCode server. This is mcp_agent in OpenCode and returns immediately with a session ID to poll.",
+    description: "Harness-only: start an OpenCode worker from a vendor CLI. Returns immediately with a session ID to poll.",
     inputSchema: {
       type: "object",
       properties: {
@@ -89,6 +104,71 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "session_start",
+    description: "Allbot desk: spawn an OpenCode 2 session with an explicit provider/model[#variant]. No Quest ledger required. Waits/steers until COMPLETE by default (pass wait=0 only to admit and return).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        model: { type: "string", description: "provider/model or provider/model#variant, e.g. cliproxyapi/gpt-5.6-luna or openai/gpt-5.6-luna-fast#max" },
+        variant: { type: "string", description: "Effort/variant if not encoded in model (max, xhigh, high, default)" },
+        effort: { type: "string", description: "Alias of variant" },
+        agent: { type: "string", description: "Host agent envelope. Default build." },
+        title: { type: "string" },
+        text: { type: "string", description: "Optional first prompt" },
+        cwd: { type: "string" },
+        questID: { type: "string", description: "Canonical Quest ID so this parent can fan out children on the same quest" },
+        quest: { type: "string", description: "Alias of questID" },
+        wait: { type: "number", description: "Milliseconds to stay in wait/steer. Default is hours, not 0. 0 = admit and return." },
+        maxSteers: { type: "number", description: "Idle continuations until COMPLETE. Default 128." },
+      },
+      required: ["model"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "session_prompt",
+    description: "Allbot desk: send a prompt or follow-up to an existing OpenCode 2 session. Waits/steers until COMPLETE by default.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionID: { type: "string" },
+        text: { type: "string" },
+        questID: { type: "string" },
+        quest: { type: "string" },
+        wait: { type: "number", description: "Milliseconds to stay in wait/steer. Default is hours, not 0. 0 = admit and return." },
+        maxSteers: { type: "number" },
+      },
+      required: ["sessionID", "text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "session_status",
+    description: "Runtime poll only (running/completed). Not quest check-in.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionID: { type: "string" },
+      },
+      required: ["sessionID"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "session_checkin",
+    description: "Allbot check-in: ask the OC2 session if the quest is complete. Returns that session's COMPLETE or NOT_COMPLETE. Does not review the work.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionID: { type: "string" },
+        questID: { type: "string", description: "Optional quest id to name in the question" },
+        quest: { type: "string", description: "Alias of questID" },
+      },
+      required: ["sessionID"],
+      additionalProperties: false,
+    },
+  },
 ]
 
 function log(...args) {
@@ -98,23 +178,37 @@ function log(...args) {
 
 // --- service discovery -------------------------------------------------
 
-function discoverService() {
+/** Live OC2 serve. `opencode2 serve --service` writes a random port into state/. */
+const LIVE_SERVE = "http://127.0.0.1:4096"
+
+export function discoverService() {
   if (process.env.OPENCODE_SERVER_URL) {
     return { url: process.env.OPENCODE_SERVER_URL, password: process.env.OPENCODE_PASSWORD || "" }
   }
+  const configPath = join(homedir(), ".config", "opencode", "service.json")
+  const statePath = join(homedir(), ".local", "state", "opencode", "service.json")
   const candidates = [
     process.env.OPENCODE_SERVICE_FILE,
-    join(homedir(), ".local", "state", "opencode", "service.json"),
-    join(homedir(), ".config", "opencode", "service.json"),
+    configPath,
+    statePath,
   ].filter(Boolean)
+  const loaded = []
   for (const path of candidates) {
     if (!existsSync(path)) continue
     try {
       const parsed = JSON.parse(readFileSync(path, "utf8"))
-      if (parsed.url) return parsed
+      const url = parsed.url ? String(parsed.url).replace(/\/+$/, "") : ""
+      const password = parsed.password || process.env.OPENCODE_PASSWORD || ""
+      loaded.push({ url, password, path })
     } catch { /* try the next candidate */ }
   }
-  return null
+  const live = loaded.find((row) => row.url === LIVE_SERVE && row.password)
+  if (live) return { url: live.url, password: live.password }
+  const passwordOnly = loaded.find((row) => !row.url && row.password)
+  if (passwordOnly) return { url: LIVE_SERVE, password: passwordOnly.password }
+  const named = loaded.find((row) => row.url && row.password)
+  if (named) return { url: named.url, password: named.password }
+  return { url: LIVE_SERVE, password: process.env.OPENCODE_PASSWORD || "" }
 }
 
 let cachedApi = null
@@ -144,17 +238,385 @@ function api() {
 
 // --- input normalization -----------------------------------------------
 
-/** Explicit `provider/model` to the { providerID, id } the API wants. */
-function normalizeModel(model) {
+/** Explicit `provider/model[#variant]` to the { providerID, id, variant? } the API wants. */
+export function normalizeModel(model, variant) {
   const raw = String(model ?? "").trim()
   if (!raw) return null
   const slash = raw.indexOf("/")
-  if (slash > 0) {
-    const providerID = raw.slice(0, slash).trim()
-    const id = raw.slice(slash + 1).trim()
-    if (providerID && id) return { providerID, id }
+  if (slash <= 0) return null
+  const providerID = raw.slice(0, slash).trim()
+  let id = raw.slice(slash + 1).trim()
+  let effort = String(variant ?? "").trim()
+  const hash = id.lastIndexOf("#")
+  if (hash > 0) {
+    if (!effort) effort = id.slice(hash + 1).trim()
+    id = id.slice(0, hash).trim()
   }
+  if (!providerID || !id) return null
+  const out = { providerID, id }
+  if (effort) out.variant = effort
+  return out
+}
+
+function formatModel(model) {
+  if (!model) return "?"
+  const base = `${model.providerID}/${model.id}`
+  return model.variant ? `${base}#${model.variant}` : base
+}
+
+export function isLiveSessionID(sessionID) {
+  const match = String(sessionID ?? "").trim().match(/^ses_([A-Za-z0-9_-]+)$/)
+  return Boolean(match && match[1].length >= LIVE_SESSION_SUFFIX_MIN)
+}
+
+export function parseWaitMs(value) {
+  if (value === undefined || value === null || value === "") return DEFAULT_WAIT_MS
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_WAIT_MS
+  return n
+}
+
+export function parseMaxSteers(value) {
+  if (value === undefined || value === null || value === "") return DEFAULT_MAX_STEERS
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_STEERS
+  return Math.floor(n)
+}
+
+export function questVerdict(text) {
+  const raw = String(text ?? "")
+  if (/\bNOT_COMPLETE\b/.test(raw)) return "NOT_COMPLETE"
+  if (/(^|\n)\s*COMPLETE\b/.test(raw)) return "COMPLETE"
   return null
+}
+
+export function steerQuestion(questID) {
+  const id = String(questID ?? "").trim()
+  const who = id ? `quest ${id}` : "the current quest"
+  return `Continue ${who} until it is COMPLETE. Fan out independent child sessions on this same questID via mcp_agent; do not wait for Grok. If complete, reply with exactly COMPLETE and one line naming the done-check. If not, keep working. No Grok reviewer.`
+}
+
+export function shouldAllowPermission(request) {
+  if (String(request?.action ?? "") === "external_directory") return true
+  const resources = Array.isArray(request?.resources) ? request.resources : []
+  return resources.some((item) => String(item).includes("external_directory"))
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function waitUntil(deadline) {
+  let timer
+  const promise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Object.assign(new Error("wait deadline"), { code: "DEADLINE" })), Math.max(1, deadline - Date.now()))
+  })
+  return { promise, cancel() { clearTimeout(timer) } }
+}
+
+function deskDriverEnabled() {
+  const raw = String(process.env.OPENCODE_DESK_DRIVER ?? "1").trim().toLowerCase()
+  return raw !== "0" && raw !== "false"
+}
+
+function driveLockPath(sessionID) {
+  const dir = process.env.OPENCODE_DESK_LOCK_DIR || join(homedir(), ".local", "state", "opencode")
+  return join(dir, `desk-drive-${sessionID}.pid`)
+}
+
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+function tryDriveLock(sessionID) {
+  const file = driveLockPath(sessionID)
+  try { mkdirSync(dirname(file), { recursive: true }) } catch { /* best-effort */ }
+  if (existsSync(file)) {
+    const owner = Number(readFileSync(file, "utf8").trim())
+    if (pidAlive(owner)) return null
+    try { unlinkSync(file) } catch { /* raced */ }
+  }
+  try { writeFileSync(file, String(process.pid), { flag: "wx" }) }
+  catch { return null }
+  return {
+    release() {
+      try { if (readFileSync(file, "utf8").trim() === String(process.pid)) unlinkSync(file) } catch { /* gone */ }
+    },
+  }
+}
+
+function spawnDeskDriver({ sessionID, questID, waitMs, maxSteers }) {
+  if (!deskDriverEnabled() || !isLiveSessionID(sessionID)) return false
+  const file = driveLockPath(sessionID)
+  try {
+    if (existsSync(file) && pidAlive(Number(readFileSync(file, "utf8").trim()))) return false
+  } catch { /* spawn anyway */ }
+  const args = [SELF, "session", "drive", "--id", sessionID, "--wait", String(waitMs || DEFAULT_WAIT_MS), "--max-steers", String(maxSteers || DEFAULT_MAX_STEERS)]
+  if (questID) args.push("--quest", questID)
+  const child = spawn(process.execPath, args, {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, OPENCODE_DESK_DRIVER: "0" },
+    windowsHide: true,
+  })
+  child.unref()
+  return true
+}
+
+async function pendingPermissions(sessionID, call) {
+  try {
+    const rows = await call("GET", `/session/${sessionID}/permission`)
+    return Array.isArray(rows?.data) ? rows.data : Array.isArray(rows) ? rows : []
+  } catch { return [] }
+}
+
+async function allowExternalDirectory(sessionID, call) {
+  if (!isLiveSessionID(sessionID)) return 0
+  let allowed = 0
+  for (const request of await pendingPermissions(sessionID, call)) {
+    if (!shouldAllowPermission(request) || !request?.id) continue
+    try {
+      await call("POST", `/session/${sessionID}/permission/${request.id}/reply`, { reply: "always" })
+      allowed++
+    } catch (error) { log("permission reply failed", request.id, error.message) }
+  }
+  return allowed
+}
+
+async function pollUntilIdle(sessionID, deadline, call) {
+  while (Date.now() < deadline) {
+    await allowExternalDirectory(sessionID, call)
+    const { final, assistant } = await latestAssistant(sessionID)
+    const finish = assistant?.finish ?? assistant?.info?.finish
+    if (finish === "error") return "error"
+    if (final) return "idle"
+    await sleep(1000)
+  }
+  return "timeout"
+}
+
+export async function waitForIdle(sessionID, deadline, call = api()) {
+  if (!isLiveSessionID(sessionID)) return "ignored"
+  const stop = { on: false }
+  const perms = (async () => {
+    while (!stop.on && Date.now() < deadline) {
+      await allowExternalDirectory(sessionID, call)
+      await sleep(150)
+    }
+  })()
+  try {
+    try {
+      const abort = waitUntil(deadline)
+      try {
+        await Promise.race([call("POST", `/session/${sessionID}/wait`), abort.promise])
+        return "idle"
+      } finally {
+        abort.cancel()
+      }
+    } catch (error) {
+      if (error?.code === "DEADLINE") return "timeout"
+      const detail = error?.message || String(error)
+      if (/\s404\b/.test(detail) || /\s503\b/.test(detail) || /not found|unavailable/i.test(detail)) {
+        return await pollUntilIdle(sessionID, deadline, call)
+      }
+      throw error
+    }
+  } finally {
+    stop.on = true
+    await perms
+    await allowExternalDirectory(sessionID, call)
+  }
+}
+
+async function readVerdict(sessionID) {
+  const { assistant, withText } = await latestAssistant(sessionID)
+  const finish = assistant?.finish ?? assistant?.info?.finish
+  const text = assistantText(withText || assistant || {})
+  if (finish === "error") return { error: assistant?.error?.message || assistant?.info?.error?.message || "error", verdict: null, text }
+  return { error: null, verdict: questVerdict(text), text }
+}
+
+async function listChildSessions(sessionID, questID, call) {
+  const ids = new Set()
+  try {
+    const rows = await call("GET", `/session?parentID=${encodeURIComponent(sessionID)}`)
+    const list = Array.isArray(rows?.data) ? rows.data : Array.isArray(rows) ? rows : []
+    for (const row of list) {
+      const id = row?.id
+      if (isLiveSessionID(id) && id !== sessionID) ids.add(id)
+    }
+  } catch { /* parentID filter is optional */ }
+  if (questID) {
+    const source = questSource(process.env.OPENCODE_CWD || "", questID) || ""
+    for (const id of source.match(/ses_[A-Za-z0-9_-]+/g) || []) {
+      if (isLiveSessionID(id) && id !== sessionID) ids.add(id)
+    }
+  }
+  return [...ids]
+}
+
+async function promptSteer(sessionID, questID, call) {
+  const text = steerQuestion(questID)
+  try { await call("POST", `/session/${sessionID}/prompt`, { text, delivery: "steer" }) }
+  catch { await call("POST", `/session/${sessionID}/prompt`, { text }) }
+}
+
+async function driveChildren(parentID, questID, deadline, call) {
+  for (const childID of await listChildSessions(parentID, questID, call)) {
+    if (Date.now() >= deadline) break
+    await waitForIdle(childID, deadline, call)
+    const { error, verdict } = await readVerdict(childID)
+    if (error || verdict === "COMPLETE") continue
+    try { await promptSteer(childID, questID, call) }
+    catch (error) { log("child steer failed", childID, error.message) }
+    await waitForIdle(childID, deadline, call)
+  }
+}
+
+export async function notifyStop(sessionID, reason, questID) {
+  if (!isLiveSessionID(sessionID)) return false
+  const url = String(process.env.OPENCODE_SESSION_STOP_WEBHOOK || "").trim()
+  if (!url) return false
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionID, reason, questID: questID || undefined }),
+    })
+    return true
+  } catch (error) {
+    log("stop webhook failed", error.message)
+    return false
+  }
+}
+
+async function steerLoop(sessionID, { waitMs, maxSteers, questID }) {
+  const call = api()
+  const deadline = Date.now() + waitMs
+  let steers = 0
+  await waitForIdle(sessionID, deadline, call)
+  for (;;) {
+    await driveChildren(sessionID, questID, deadline, call)
+    const { error, verdict, text } = await readVerdict(sessionID)
+    if (error) {
+      await notifyStop(sessionID, "error", questID)
+      return { run: "error", detail: error, steers }
+    }
+    if (verdict === "COMPLETE") {
+      await notifyStop(sessionID, "complete", questID)
+      return { run: "complete", detail: text, steers }
+    }
+    if (Date.now() >= deadline) return { run: "timeout", steers }
+    if (steers >= maxSteers) return { run: "max-steers", steers }
+    await promptSteer(sessionID, questID, call)
+    steers++
+    await waitForIdle(sessionID, deadline, call)
+  }
+}
+
+async function watchUntilDone(sessionID, { waitMs, questID, maxSteers }) {
+  const call = api()
+  const deadline = Date.now() + waitMs
+  while (Date.now() < deadline) {
+    const stolen = tryDriveLock(sessionID)
+    if (stolen) {
+      try { return await steerLoop(sessionID, { waitMs: Math.max(1, deadline - Date.now()), maxSteers: maxSteers || DEFAULT_MAX_STEERS, questID }) }
+      finally { stolen.release() }
+    }
+    await allowExternalDirectory(sessionID, call)
+    await waitForIdle(sessionID, deadline, call)
+    const { error, verdict, text } = await readVerdict(sessionID)
+    if (error) return { run: "error", detail: error, steers: 0 }
+    if (verdict === "COMPLETE") return { run: "complete", detail: text, steers: 0 }
+    await sleep(1000)
+  }
+  return { run: "timeout", steers: 0 }
+}
+
+function formatRun(prefixLines, result) {
+  const extra = [`Run: ${result.run}`]
+  if (result.steers) extra.push(`Steers: ${result.steers}`)
+  if (result.run === "complete") extra.push("COMPLETE")
+  else if (result.detail) extra.push(String(result.detail).split("\n")[0].slice(0, 300))
+  return { content: [{ type: "text", text: [...prefixLines, ...extra].join("\n") }] }
+}
+
+async function finishDeskRun(sessionID, input, prefixLines) {
+  const waitMs = parseWaitMs(input.wait)
+  const maxSteers = parseMaxSteers(input.maxSteers)
+  const questID = String(input.questID || input.quest || "").trim()
+  if (!isLiveSessionID(sessionID)) {
+    return { content: [{ type: "text", text: [...prefixLines, "Run: ignored"].join("\n") }] }
+  }
+  if (waitMs <= 0) {
+    return { content: [{ type: "text", text: [...prefixLines, "Run: immediate"].join("\n") }] }
+  }
+  spawnDeskDriver({ sessionID, questID, waitMs, maxSteers })
+  const lock = tryDriveLock(sessionID)
+  const result = lock
+    ? await (async () => { try { return await steerLoop(sessionID, { waitMs, maxSteers, questID }) } finally { lock.release() } })()
+    : await watchUntilDone(sessionID, { waitMs, questID })
+  return formatRun(prefixLines, result)
+}
+
+async function startDeskSession(input) {
+  const model = normalizeModel(input.model, input.variant || input.effort)
+  if (!model) throw new Error("session_start: explicit provider/model is required")
+  const call = api()
+  const agent = String(input.agent || "build").trim() || "build"
+  const title = String(input.title || `${formatModel(model)} - desk`).replace(/\s+/g, " ").slice(0, 240)
+  const session = await call("POST", "/session", { title, agent, model })
+  const sessionID = session?.id
+  if (!sessionID) throw new Error("session create returned no id: " + JSON.stringify(session).slice(0, 300))
+  const cwd = input.cwd || process.env.OPENCODE_CWD || ""
+  if (cwd && session?.location?.directory !== cwd) {
+    try { await call("POST", `/session/${sessionID}/move`, { directory: cwd }) }
+    catch (error) { log("move failed", error.message) }
+  }
+  const text = String(input.text ?? "").trim()
+  if (text) await call("POST", `/session/${sessionID}/prompt`, { text })
+  const lines = [`Session: ${sessionID}`, `Model: ${formatModel(session?.model || model)}`, `Agent: ${session?.agent || agent}`, text ? "Prompt: sent" : "Prompt: none"]
+  if (!text) return { content: [{ type: "text", text: lines.join("\n") }] }
+  return finishDeskRun(sessionID, input, lines)
+}
+
+async function promptDeskSession(input) {
+  const sessionID = String(input.sessionID ?? "").trim()
+  if (!/^ses_[A-Za-z0-9_-]+$/.test(sessionID)) throw new Error("session_prompt: valid sessionID is required")
+  const text = String(input.text ?? "").trim()
+  if (!text) throw new Error("session_prompt: text is required")
+  const call = api()
+  await call("POST", `/session/${sessionID}/prompt`, { text })
+  return finishDeskRun(sessionID, input, [`Session: ${sessionID}`, "Prompt: sent"])
+}
+
+const CHECKIN_MS = 90_000
+
+export function checkinQuestion(questID) {
+  const id = String(questID ?? "").trim()
+  const who = id ? `quest ${id}` : "the current quest"
+  return `Check-in only: is ${who} complete? Reply with exactly COMPLETE or NOT_COMPLETE, then one line naming the done-check. Do not summarize or review the work. No Grok reviewer.`
+}
+
+async function checkinDeskSession(input) {
+  const sessionID = String(input.sessionID ?? "").trim()
+  if (!/^ses_[A-Za-z0-9_-]+$/.test(sessionID)) throw new Error("session_checkin: valid sessionID is required")
+  await promptDeskSession({ sessionID, text: checkinQuestion(input.questID || input.quest), wait: 0 })
+  const deadline = Date.now() + CHECKIN_MS
+  while (Date.now() < deadline) {
+    const { final, withText, assistant } = await latestAssistant(sessionID)
+    if (assistant?.finish === "error") {
+      const err = assistant.error?.message || "error"
+      return { content: [{ type: "text", text: `Session: ${sessionID}\nNOT_COMPLETE\n${err}` }] }
+    }
+    if (final) {
+      const text = assistantText(withText || final) || "(no assistant output)"
+      return { content: [{ type: "text", text: `Session: ${sessionID}\n${text}` }] }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+  }
+  throw new Error("session_checkin: timed out waiting for the session to answer")
 }
 
 function assistantText(message) {
@@ -224,14 +686,11 @@ function compactQuestContext(source, questID) {
   return lines.join("\n").slice(0, 3600)
 }
 
-/** The caller supplies no role. The first planned session owns the Quest; its descendants are workers. */
+/** Harness spawn path. OpenCode Quest dispatch uses native subagent, not this server. */
 function agentForQuest(cwd, questID) {
   const source = questSource(cwd, questID)
   if (!source) throw new Error(`mcp_agent: Quest ${questID} is not in the canonical ledger`)
-  const boundOwner = /^integrationOwner:\s*["']?ses_[A-Za-z0-9_-]+/m.test(source)
-  const plannedOwner = /^sessions:\s*.*"role":"integration-owner".*"state":"planned"/m.test(source)
-  if (!boundOwner && !plannedOwner) throw new Error(`mcp_agent: Quest ${questID} has no derived integration-owner plan`)
-  return boundOwner ? "build" : "orchestrator"
+  return "build"
 }
 
 /** Messages come back newest-first, so the freshest assistant turn is the first hit. */
@@ -373,7 +832,7 @@ async function pickModel(input) {
     log("model list failed:", error.message)
   }
   // The harness providers are the interesting ones; the raw list runs to hundreds.
-  const harness = ids.filter((id) => /^(claude-code|grok-build|grok-sub|codex|opencode-go)\//.test(id))
+  const harness = ids.filter((id) => /^(cliproxyapi|openai|claude-code|grok-build|grok-sub|codex|opencode-go)\//.test(id))
   return {
     content: [{
       type: "text",
@@ -386,6 +845,81 @@ async function pickModel(input) {
   }
 }
 
+
+async function driveDeskCli(flags) {
+  process.env.OPENCODE_DESK_DRIVER = "0"
+  const sessionID = String(flags.id || "").trim()
+  const waitMs = parseWaitMs(flags.wait === undefined || flags.wait === "" ? DEFAULT_WAIT_MS : flags.wait) || DEFAULT_WAIT_MS
+  const maxSteers = parseMaxSteers(flags["max-steers"])
+  const questID = String(flags.quest || "").trim()
+  if (!isLiveSessionID(sessionID)) {
+    return { content: [{ type: "text", text: `Session: ${sessionID}\nRun: ignored` }] }
+  }
+  const lock = tryDriveLock(sessionID)
+  const result = lock
+    ? await (async () => { try { return await steerLoop(sessionID, { waitMs, maxSteers, questID }) } finally { lock.release() } })()
+    : await watchUntilDone(sessionID, { waitMs, questID })
+  return formatRun([`Session: ${sessionID}`], result)
+}
+
+function parseDeskArgs(argv) {
+  const flags = {}
+  const rest = []
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === "--model" || arg === "--variant" || arg === "--effort" || arg === "--agent" || arg === "--title" || arg === "--text" || arg === "--id" || arg === "--cwd" || arg === "--task" || arg === "--quest" || arg === "--wait" || arg === "--max-steers") {
+      flags[arg.slice(2)] = argv[++i] ?? ""
+    } else if (arg.startsWith("--")) {
+      throw new Error("unknown flag " + arg)
+    } else rest.push(arg)
+  }
+  return { flags, rest }
+}
+
+async function runDeskCli(argv) {
+  const sub = argv[0]
+  const { flags, rest } = parseDeskArgs(argv.slice(1))
+  let result
+  if (sub === "start") {
+    result = await startDeskSession({
+      model: flags.model || rest[0],
+      variant: flags.variant || flags.effort,
+      agent: flags.agent,
+      title: flags.title,
+      text: flags.text || (flags.model ? rest.join(" ") : rest.slice(1).join(" ")),
+      cwd: flags.cwd,
+      questID: flags.quest,
+      wait: flags.wait,
+      maxSteers: flags["max-steers"],
+    })
+  } else if (sub === "prompt") {
+    result = await promptDeskSession({ sessionID: flags.id || rest[0], text: flags.text || rest.slice(1).join(" "), questID: flags.quest, wait: flags.wait, maxSteers: flags["max-steers"] })
+  } else if (sub === "drive") {
+    result = await driveDeskCli(flags)
+  } else if (sub === "status") {
+    result = await taskStatus({ sessionID: flags.id || rest[0] })
+  } else if (sub === "checkin") {
+    result = await checkinDeskSession({ sessionID: flags.id || rest[0], questID: flags.quest || rest[1] })
+  } else if (sub === "models") {
+    result = await pickModel({ task: flags.task || rest.join(" ") || "desk" })
+  } else {
+    throw new Error("usage: session start|prompt|drive|status|checkin|models")
+  }
+  process.stdout.write((result.content?.[0]?.text || "") + "\n")
+}
+
+function isMainModule() {
+  const entry = process.argv[1]
+  if (!entry) return false
+  try { return fileURLToPath(import.meta.url) === resolve(entry) } catch { return false }
+}
+
+if (process.argv[2] === "session") {
+  runDeskCli(process.argv.slice(3)).catch((error) => {
+    console.error(error.message || error)
+    process.exit(1)
+  })
+} else if (isMainModule()) {
 // --- MCP JSON-RPC loop --------------------------------------------------
 
 const rl = createInterface({ input: process.stdin, terminal: false })
@@ -424,8 +958,11 @@ rl.on("line", async (line) => {
       let result
       if (name === "agent") result = await startAgent(args)
       else if (name === "pick_model") result = await pickModel(args)
-      else if (name === "agent_status") result = await taskStatus(args)
+      else if (name === "agent_status" || name === "session_status") result = await taskStatus(args)
       else if (name === "agent_output") result = await taskOutput(args)
+      else if (name === "session_start") result = await startDeskSession(args)
+      else if (name === "session_prompt") result = await promptDeskSession(args)
+      else if (name === "session_checkin") result = await checkinDeskSession(args)
       else throw new Error(`unknown tool: ${name}`)
       send({ result: { content: result.content } })
     } else {
@@ -450,3 +987,4 @@ process.on("uncaughtException", (error) => log("uncaught", error))
 process.on("unhandledRejection", (error) => log("unhandled", error))
 
 log("started pid", process.pid, "parent", process.env.OPENCODE_PARENT_SESSION_ID || "none")
+}
